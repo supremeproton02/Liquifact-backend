@@ -7,7 +7,7 @@ module.exports = [
     ignores: ['coverage/**'],
   },
   {
-    files: ['src/**/*.js'],
+    files: ['src/**/*.js', 'migrator-config.js', 'scripts/**/*.js'],
     plugins: { security, jsdoc },
     languageOptions: {
       ecmaVersion: 2022,

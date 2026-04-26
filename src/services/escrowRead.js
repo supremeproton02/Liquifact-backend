@@ -143,8 +143,96 @@ async function _fetchBaseEscrowState(invoiceId, adapter) {
   return callSorobanContract(operation);
 }
 
+/**
+ * Fetches the attestation append log for an invoice from the Soroban contract.
+ * Returns an array of attestation entries with index and hex-encoded digest.
+ *
+ * @param {string} invoiceId - Validated invoice identifier.
+ * @param {Function} [adapter] - Optional async function for testing.
+ * @returns {Promise<Array<{index: number, digest: string}>>} Array of attestation entries.
+ */
+async function fetchAttestationAppendLog(invoiceId, adapter) {
+  const operation = adapter
+    ? () => adapter(invoiceId)
+    : async () => {
+        // Production stub — replace with real Soroban RPC invocation:
+        //   return sorobanClient.invokeContract(contractId, 'get_attestation_append_log', [invoiceId]);
+        // Expected return: array of {index: number, digest: Buffer}
+        return [
+          { index: 0, digest: Buffer.from('deadbeef', 'hex') },
+          { index: 1, digest: Buffer.from('cafebabe', 'hex') },
+        ];
+      };
+
+  try {
+    const result = await callSorobanContract(operation);
+    if (!Array.isArray(result)) {
+      logger.warn({ invoiceId }, 'escrowRead: get_attestation_append_log returned non-array');
+      return [];
+    }
+    // Decode each entry: convert digest to hex string
+    return result.map(entry => ({
+      index: entry.index,
+      digest: entry.digest ? entry.digest.toString('hex') : '',
+    }));
+  } catch (err) {
+    logger.warn(
+      { invoiceId, errCode: err && err.code },
+      'escrowRead: get_attestation_append_log call failed — returning empty array',
+    );
+    return [];
+  }
+}
+
+/**
+ * Reads the full escrow state including attestation digests for investor diligence.
+ *
+ * @param {string} invoiceId - Invoice identifier (validated internally).
+ * @param {object} [options={}]
+ * @param {Function} [options.legalHoldAdapter] - Injected adapter for `get_legal_hold`.
+ * @param {Function} [options.escrowAdapter] - Injected adapter for base escrow state.
+ * @param {Function} [options.attestationAdapter] - Injected adapter for attestation log.
+ * @returns {Promise<EscrowStateWithAttestations>} Enriched escrow state with attestations.
+ * @throws {EscrowReadError} When `invoiceId` is invalid.
+ *
+ * @typedef {object} EscrowStateWithAttestations
+ * @property {string} invoiceId - The invoice identifier.
+ * @property {string} status - On-chain escrow status string.
+ * @property {number} fundedAmount - Amount currently held in escrow.
+ * @property {boolean} legal_hold - Whether the escrow is under legal hold.
+ * @property {Array<{index: number, digest: string}>} attestations - Append-only attestation digests.
+ */
+async function readEscrowStateWithAttestations(invoiceId, options = {}) {
+  const { legalHoldAdapter, escrowAdapter, attestationAdapter } = options;
+
+  const { valid, reason } = validateInvoiceId(invoiceId);
+  if (!valid) {
+    const err = new Error(reason);
+    err.code = 'INVALID_INVOICE_ID';
+    err.status = 400;
+    throw err;
+  }
+
+  const safeId = invoiceId.trim();
+
+  // Fetch all data concurrently
+  const [baseState, legalHold, attestations] = await Promise.all([
+    _fetchBaseEscrowState(safeId, escrowAdapter),
+    fetchLegalHold(safeId, legalHoldAdapter),
+    fetchAttestationAppendLog(safeId, attestationAdapter),
+  ]);
+
+  return {
+    ...baseState,
+    legal_hold: legalHold,
+    attestations,
+  };
+}
+
 module.exports = {
   readEscrowState,
+  readEscrowStateWithAttestations,
   fetchLegalHold,
+  fetchAttestationAppendLog,
   validateInvoiceId,
 };

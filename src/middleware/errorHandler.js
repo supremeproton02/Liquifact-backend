@@ -1,6 +1,7 @@
 const AppError = require('../errors/AppError');
 const { mapError } = require('../errors/mapError');
 const logger = require('../logger');
+const { captureException } = require('../observability/sentry');
 
 /**
  * Express 404 handler that forwards a structured not-found error.
@@ -36,6 +37,7 @@ function errorHandler(error, req, res, _next) {
   const requestId = req.id || 'unknown';
 
   logError(error, requestId);
+  captureException(error, req);
 
   res.status(mapped.status).json({
     error: {
