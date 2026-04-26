@@ -347,6 +347,7 @@ const sentry = require('./observability/sentry');
 const requestId = require('./middleware/requestId');
 const pinoHttp = require('pino-http');
 const investRoutes = require('./routes/invest');
+const v1Router = require('./routes/v1');
 const invoiceFileRouter = require('./routes/invoiceFile');
 
 const PORT = process.env.PORT || 3001;
@@ -415,11 +416,19 @@ function createApp(options = {}) {
   app.use(globalLimiter);
   app.use(auditMiddleware);
 
+  // Deprecation middleware for /api paths
+  app.use('/api', (req, res, next) => {
+    res.set('Deprecation', 'true');
+    res.set('Warning', '299 - "This API version is deprecated. Please use /v1/ endpoints."');
+    next();
+  });
+
   // ───────── ROUTES ─────────
 
   app.use('/api/sme', smeRouter);
   app.use('/api/invest', investRoutes);
   app.use('/api/invoices', invoiceFileRouter);
+  app.use('/v1', v1Router);
 
   app.get('/health', async (req, res) => {
     const health = await performHealthChecks();
@@ -510,10 +519,10 @@ function createApp(options = {}) {
   });
 
   // V1 API Namespace
-  const v1Router = express.Router();
+  const versionedRouter = express.Router();
 
   // Escrow routes in V1
-  v1Router.get('/escrow/:invoiceId', authenticateToken, async (req, res) => {
+  versionedRouter.get('/escrow/:invoiceId', authenticateToken, async (req, res) => {
     const { invoiceId } = req.params;
     const currentLedger =
       parseLedgerSequence(req.query.ledgerSequence) ??
@@ -537,7 +546,7 @@ function createApp(options = {}) {
     }
   });
 
-  v1Router.post('/escrow', authenticateToken, sensitiveLimiter, (req, res) => {
+  versionedRouter.post('/escrow', authenticateToken, sensitiveLimiter, (req, res) => {
     res.json({
       data: { status: 'funded' },
       message: 'Escrow operation simulated.',
@@ -545,18 +554,18 @@ function createApp(options = {}) {
   });
 
   // Versioned routes
-  app.use('/v1', v1Router);
+  app.use('/v1', versionedRouter);
 
   // Backward compatibility for /api/escrow
   app.get('/api/escrow/:invoiceId', (req, res, next) => {
     res.set('Warning', '299 - "This endpoint is deprecated. Use /v1/escrow instead."');
     next();
-  }, v1Router.stack.find(s => s.route && s.route.path === '/escrow/:invoiceId').handle);
+  }, versionedRouter.stack.find(s => s.route && s.route.path === '/escrow/:invoiceId').handle);
 
   app.post('/api/escrow', (req, res, next) => {
     res.set('Warning', '299 - "This endpoint is deprecated. Use /v1/escrow instead."');
     next();
-  }, v1Router.stack.find(s => s.route && s.route.path === '/escrow').handle);
+  }, versionedRouter.stack.find(s => s.route && s.route.path === '/escrow').handle);
 
 
   if (enableTestRoutes) {
