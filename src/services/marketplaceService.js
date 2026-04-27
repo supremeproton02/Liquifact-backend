@@ -1,7 +1,6 @@
 'use strict';
 
 const db = require('../db/knex');
-const { applyQueryOptions } = require('../utils/queryBuilder');
 
 /**
  * Marketplace Service
@@ -44,13 +43,13 @@ async function getMarketplaceInvoices(queryParams) {
     let query = db('invoices').select('*').whereNull('deleted_at');
 
     // Apply filters
-    if (filters.yieldBpsMin) query.where('yield_bps', '>=', filters.yieldBpsMin);
-    if (filters.yieldBpsMax) query.where('yield_bps', '<=', filters.yieldBpsMax);
-    if (filters.maturityDateFrom) query.where('maturity_date', '>=', filters.maturityDateFrom);
-    if (filters.maturityDateTo) query.where('maturity_date', '<=', filters.maturityDateTo);
-    if (filters.fundedRatioMin) query.where('funded_ratio', '>=', filters.fundedRatioMin);
-    if (filters.fundedRatioMax) query.where('funded_ratio', '<=', filters.fundedRatioMax);
-    if (filters.status) query.where('status', filters.status);
+    if (filters.yieldBpsMin) {query.where('yield_bps', '>=', filters.yieldBpsMin);}
+    if (filters.yieldBpsMax) {query.where('yield_bps', '<=', filters.yieldBpsMax);}
+    if (filters.maturityDateFrom) {query.where('maturity_date', '>=', filters.maturityDateFrom);}
+    if (filters.maturityDateTo) {query.where('maturity_date', '<=', filters.maturityDateTo);}
+    if (filters.fundedRatioMin) {query.where('funded_ratio', '>=', filters.fundedRatioMin);}
+    if (filters.fundedRatioMax) {query.where('funded_ratio', '<=', filters.fundedRatioMax);}
+    if (filters.status) {query.where('status', filters.status);}
 
     // Apply sorting using applyQueryOptions for consistency where possible, 
     // but handle custom filters above as applyQueryOptions is limited.
