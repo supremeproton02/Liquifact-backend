@@ -1,43 +1,39 @@
-// 'use strict';
+'use strict';
 
-// /**
-//  * Express server bootstrap for invoice financing, auth, and Stellar integration.
-//  *
-//  * All /api/* routes now enforce tenant-scoped data isolation:
-//  *   - `extractTenant` middleware resolves the caller's tenantId from either
-//  *     the `x-tenant-id` request header or an authenticated JWT claim.
-//  *   - Every invoice read/write delegates to the tenant-aware repository so
-//  *     that no tenant can ever observe or mutate another tenant's data.
-//  */
+const express = require('express');
+const cors = require('cors');
+require('dotenv').config();
 
-// const express = require('express');
-// const cors = require('cors');
-// require('dotenv').config();
-// // import { securityMiddleware } from "./middleware/security.js";
-// const { createSecurityMiddleware } = require('./middleware/security');
+const config = require('./config');
+// Fail-fast boot validation
+if (process.env.NODE_ENV !== 'test') {
+  config.validate();
+}
 
-// securityMiddleware(app);
-// const { createSecurityMiddleware } = require('./middleware/security');
-// const { createCorsOptions } = require('./config/cors');
-// const { correlationIdMiddleware } = require('./middleware/correlationId');
-// const { jsonBodyLimit, urlencodedBodyLimit, payloadTooLargeHandler } = require('./middleware/bodySizeLimits');
-// const { auditMiddleware } = require('./middleware/audit');
-// const { globalLimiter, sensitiveLimiter } = require('./middleware/rateLimit');
-// const { authenticateToken } = require('./middleware/auth');
-// const smeRouter = require('./routes/sme');
-// const errorHandler = require('./middleware/errorHandler');
-// const { callSorobanContract } = require('./services/soroban');
-// const AppError = require('./errors/AppError');
-// const logger = require('./logger');
-// const requestId = require('./middleware/requestId');
-// const pinoHttp = require('pino-http');
-// const investRoutes = require('./routes/invest');
-
-// const PORT = process.env.PORT || 3001;
-
-// // In-memory storage for invoices (Issue #25).
-// let invoices = [];
-
+const { createSecurityMiddleware } = require('./middleware/security');
+const { createCorsOptions } = require('./config/cors');
+const { correlationIdMiddleware } = require('./middleware/correlationId');
+const {
+  jsonBodyLimit,
+  urlencodedBodyLimit,
+  payloadTooLargeHandler,
+} = require('./middleware/bodySizeLimits');
+const { auditMiddleware } = require('./middleware/audit');
+const { globalLimiter, sensitiveLimiter } = require('./middleware/rateLimit');
+const { authenticateToken } = require('./middleware/auth');
+const { extractTenant } = require('./middleware/tenant');
+const smeRouter = require('./routes/sme');
+const errorHandler = require('./middleware/errorHandler');
+const { callSorobanContract } = require('./services/soroban');
+const { performHealthChecks } = require('./services/health');
+const invoiceService = require('./services/invoiceService');
+const AppError = require('./errors/AppError');
+const logger = require('./logger');
+const requestId = require('./middleware/requestId');
+const pinoHttp = require('pino-http');
+const investRoutes = require('./routes/invest');
+const invoiceRoutes = require('./routes/invoiceRoutes');
+const invoiceFileRouter = require('./routes/invoiceFile');
 /**
  * Combined authentication middleware: allows JWT or API key for admin/service auth.
  * @param {object} req - Express request.
@@ -353,6 +349,8 @@ const investorRoutes = require('./routes/investor');
 
 const PORT = process.env.PORT || 3001;
 
+// In-memory storage for escrow (database migration pending)
+const escrowSummaryCache = createRedisEscrowSummaryCache();
 // In-memory storage
 let invoices = [];
 
@@ -511,6 +509,96 @@ function createApp(options = {}) {
     });
   });
 
+  app.use('/api/invest', investRoutes);
+  app.use('/api/invoices', invoiceFileRouter);
+
+  app.get('/api/invoices', authenticateToken, extractTenant, async (req, res) => {
+    try {
+      const { status } = req.query;
+      const invoices = await invoiceService.getInvoices(req.tenantId, status);
+      return res.json({
+        data: invoices,
+        message: status ? `Showing invoices with status: ${status}` : 'Showing all invoices',
+      });
+    } catch (error) {
+      logger.error('Error fetching invoices:', error);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  app.post(
+    '/api/invoices',
+    authenticateToken,
+    extractTenant,
+    sensitiveLimiter,
+    async (req, res) => {
+      try {
+        const { amount, customer, metadata } = req.body;
+
+        if (!amount || !customer) {
+          return res
+            .status(400)
+            .json({ error: 'Amount and customer are required' });
+        }
+
+        const newInvoice = await invoiceService.createInvoice(
+          { amount, customer, metadata },
+          req.tenantId
+        );
+
+        res.status(201).json({
+          data: newInvoice,
+          message: 'Invoice created successfully.',
+        });
+      } catch (error) {
+        logger.error('Error creating invoice:', error);
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  );
+
+  /**
+   * @swagger
+   * /api/invoices/{id}:
+   *   get:
+   *     summary: Get a single invoice
+   *     description: Retrieve a single invoice by its ID
+   *     tags: [Invoices]
+   *     security:
+   *       - bearerAuth: []
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: string
+   *         description: Invoice ID
+   *     responses:
+   *       200:
+   *         description: Invoice retrieved successfully
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 data:
+   *                   $ref: '#/components/schemas/Invoice'
+   *                 message:
+   *                   type: string
+   *       401:
+   *         description: Unauthorized
+   *       403:
+   *         description: Forbidden - not the owner
+   *       404:
+   *         description: Invoice not found
+   */
+  app.get('/api/invoices/:id', authenticateToken, (req, res) => {
+    const { id } = req.params;
+    const userId = req.user?.id || req.user?.sub || req.headers['x-user-id']; // Placeholder for auth
+
+    // Basic validation
+    if (!id || id.trim() === '') {
+      return res.status(400).json({ error: 'Bad Request', message: 'Missing or invalid invoice ID' });
   // Invoice routes (standard API)
   app.get('/api/invoices', validateQuery(paginationQuerySchema), (req, res) => {
     const includeDeleted = req.query.includeDeleted === 'true';

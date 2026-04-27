@@ -54,32 +54,88 @@ const mockInvoices = [
  * Performs authorization checks and includes KYC status.
  *
  * @param {string} id - The unique identifier of the invoice.
- * @param {string} userId - The unique identifier of the user (from auth middleware).
+ * @param {string} tenantId - The tenant ID for isolation.
  * @returns {Object|null} The invoice data or null if not found.
  */
-const getInvoiceById = (id, userId) => {
-  // 1. Basic validation (should also be handled by route middleware)
+const getInvoiceById = async (id, tenantId) => {
+  // 1. Basic validation
   if (!id || typeof id !== 'string') {
     throw new Error('Invalid invoice ID');
   }
 
-  // 2. Fetch from DB
-  const invoice = mockInvoices.find((inv) => inv.id === id);
+  // 2. Fetch from DB with tenant isolation
+  const invoice = await db('invoices')
+    .where({ invoice_id: id, tenant_id: tenantId, deleted_at: null })
+    .first();
 
-  // 3. Robust Not Found handling
+  // 3. Not Found handling
   if (!invoice) {
     return null;
   }
 
-  // 4. Secure Authorization handling
-  // If the user is not the owner, deny access.
-  if (invoice.ownerId !== userId) {
-    const error = new Error('Forbidden');
-    error.status = 403;
-    throw error;
+  return invoice;
+};
+
+/**
+ * Get all invoices for a tenant, with optional status filter.
+ *
+ * @param {string} tenantId - The tenant ID.
+ * @param {string} [status] - Optional status filter.
+ * @returns {Array} List of invoices.
+ */
+const getInvoices = async (tenantId, status) => {
+  let query = db('invoices')
+    .where({ tenant_id: tenantId, deleted_at: null })
+    .orderBy('created_at', 'desc');
+
+  if (status) {
+    query = query.where({ status });
   }
 
-  return invoice;
+  return await query;
+};
+
+/**
+ * Create a new invoice.
+ *
+ * @param {Object} invoiceData - The invoice data.
+ * @param {string} tenantId - The tenant ID.
+ * @returns {Object} The created invoice.
+ */
+const createInvoice = async (invoiceData, tenantId) => {
+  const { amount, customer, status = 'pending', metadata } = invoiceData;
+
+  const invoiceId = `inv_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+
+  const [newInvoice] = await db('invoices')
+    .insert({
+      invoice_id: invoiceId,
+      amount,
+      customer,
+      status,
+      tenant_id: tenantId,
+      metadata: metadata || null,
+    })
+    .returning('*');
+
+  return newInvoice;
+};
+
+/**
+ * Update invoice status.
+ *
+ * @param {string} id - Invoice ID.
+ * @param {string} status - New status.
+ * @param {string} tenantId - Tenant ID.
+ * @returns {Object|null} Updated invoice or null.
+ */
+const updateInvoiceStatus = async (id, status, tenantId) => {
+  const [updated] = await db('invoices')
+    .where({ invoice_id: id, tenant_id: tenantId })
+    .update({ status, updated_at: db.fn.now() })
+    .returning('*');
+
+  return updated || null;
 };
 
 /**
