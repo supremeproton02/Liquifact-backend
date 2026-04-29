@@ -19,6 +19,7 @@ const { globalLimiter, sensitiveLimiter } = require('./middleware/rateLimit');
 const { authenticateToken } = require('./middleware/auth');
 const errorHandler = require('./middleware/errorHandler');
 const { callSorobanContract } = require('./services/soroban');
+const { readEscrowState } = require('./services/escrowRead');
 const AppError = require('./errors/AppError');
 
 const PORT = process.env.PORT || 3001;
@@ -145,26 +146,18 @@ function createApp(options = {}) {
     });
   });
 
+
   app.get('/api/escrow/:invoiceId', authenticateToken, async (req, res) => {
-    const { invoiceId } = req.params;
-
+    const invoiceId = String(req.params.invoiceId || '').trim().replace(/\s+/g, '');
     try {
-      /**
-       * Simulates a Soroban operation for escrow lookup.
-       *
-       * @returns {Promise<object>} Placeholder escrow state.
-       */
-      const operation = async () => {
-        return { invoiceId, status: 'not_found', fundedAmount: 0 };
-      };
-
-      const data = await callSorobanContract(operation);
+      const data = await readEscrowState(invoiceId);
       return res.json({
         data,
         message: 'Escrow state read from Soroban contract via robust integration wrapper.',
       });
     } catch (error) {
-      return res.status(500).json({ error: error.message || 'Error fetching escrow state' });
+      const status = error.status || 500;
+      return res.status(status).json({ error: error.message || 'Error fetching escrow state' });
     }
   });
 
