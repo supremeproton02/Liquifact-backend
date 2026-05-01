@@ -8,12 +8,12 @@
  * @module services/escrowRead
  */
 
-'use strict';
+"use strict";
 
-const { callSorobanContract } = require('./soroban');
-const { emitWebhook } = require('./webhooks');
-const logger = require('../logger');
-const { getTokenMetadata } = require('./tokenMeta');
+const { callSorobanContract } = require("./soroban");
+const { emitWebhook } = require("./webhooks");
+const logger = require("../logger");
+const { getTokenMetadata } = require("./tokenMeta");
 
 /**
  * Regex that a valid invoice ID must satisfy.

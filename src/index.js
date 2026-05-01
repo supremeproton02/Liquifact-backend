@@ -659,6 +659,9 @@ function createApp(options = {}) {
     });
   });
 
+}
+  });
+
   app.post(
     '/api/invoices',
     authenticateToken,
@@ -912,7 +915,7 @@ function createApp(options = {}) {
    *       500:
    *         description: Error fetching escrow state
    */
-  app.get('/api/escrow/:invoiceId', authenticateToken, async (req, res) => {
+  // app.get('/api/escrow/:invoiceId', authenticateToken, async (req, res) => {
   app.post('/api/invoices', authenticateToken, sensitiveLimiter, (req, res) => {
     const { amount, customer } = req.body;
     if (!amount || !customer) {
@@ -1188,6 +1191,7 @@ if (enableTestRoutes) {
 
   return app;
 }
+
 
 const appInstance = createApp({
   enableTestRoutes: process.env.NODE_ENV === 'test',
