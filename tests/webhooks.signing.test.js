@@ -64,21 +64,44 @@ describe('webhooks service', () => {
       expect(db).toHaveBeenCalledWith('invoices');
       expect(db).toHaveBeenCalledWith('tenants');
 
-      expect(axios.post).toHaveBeenCalledWith(
-        'https://example.com/webhook',
-        expect.objectContaining({
-          event,
-          invoiceId,
-          amount: 1000,
-        }),
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-            'X-Signature': expect.stringMatching(/^t=\d+,v1=[a-f0-9]{64}$/),
-          }),
-          timeout: 5000,
-        })
-      );
+      const expectedPayloadObj = {
+        amount: 1000,
+        event,
+        invoiceId,
+        timestamp: expect.any(String),
+      };
+
+      expect(axios.post).toHaveBeenCalledTimes(1);
+      const [url, rawBody, options] = axios.post.mock.calls[0];
+
+      expect(url).toBe('https://example.com/webhook');
+      expect(options.timeout).toBe(5000);
+      expect(options.headers['Content-Type']).toBe('application/json');
+
+      const signatureHeader = options.headers['X-Signature'];
+      expect(signatureHeader).toMatch(/^t=\d+,v1=[a-f0-9]{64}$/);
+
+      // Verify payload serialization drift and key ordering
+      const parsedBody = JSON.parse(rawBody);
+      const expectedPayloadStr = JSON.stringify({
+        amount: 1000,
+        event,
+        invoiceId,
+        timestamp: parsedBody.timestamp,
+      });
+      expect(rawBody).toBe(expectedPayloadStr);
+
+      // Verify signature byte-for-byte independently
+      const timestamp = signatureHeader.match(/t=(\d+)/)[1];
+      const actualSig = signatureHeader.match(/v1=([a-f0-9]{64})/)[1];
+      
+      const crypto = require('crypto');
+      const expectedSig = crypto
+        .createHmac('sha256', 'secret123')
+        .update(`${timestamp}.${rawBody}`)
+        .digest('hex');
+      
+      expect(actualSig).toBe(expectedSig);
 
       expect(logger.info).toHaveBeenCalledWith(
         { event, invoiceId, tenant_id: 'tenant_123' },
