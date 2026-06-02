@@ -98,8 +98,7 @@
       "<rootDir>/tests/soroban.sim.test.js",
       "<rootDir>/tests/unit/errorHandler.test.js",
       "<rootDir>/tests/unit/migration-utils.test.js",
-      "<rootDir>/tests/validation.test.js",
-      "<rootDir>/tests/webhooks.signing.test.js"
+      "<rootDir>/tests/validation.test.js"
     ]
   },
   "dependencies": {
@@ -108,6 +107,7 @@
     "@aws-sdk/s3-request-presigner": "^3.665.0",
     "@jadonamite/automata-sdk": "^1.0.1",
     "@sentry/node": "^8.0.0",
+    "axios": "^1.16.1",
     "chessify-protocol": "^0.1.0",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",

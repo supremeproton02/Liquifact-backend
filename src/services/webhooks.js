@@ -8,6 +8,27 @@ const SIGNATURE_VERSION = 'v1';
 const TOLERANCE_MS = 5 * 60 * 1000;
 
 /**
+ * Recursively sorts keys of an object to ensure deterministic JSON serialization.
+ *
+ * @param {any} obj - The object to sort.
+ * @returns {any} A new object with keys sorted.
+ */
+function sortKeys(obj) {
+  if (obj === null || typeof obj !== 'object') {
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(sortKeys);
+  }
+  const sortedObj = {};
+  const keys = Object.keys(obj).sort();
+  for (const key of keys) {
+    sortedObj[key] = sortKeys(obj[key]);
+  }
+  return sortedObj;
+}
+
+/**
  * Creates an HMAC-SHA256 signature for the given payload and timestamp.
  *
  * @param {string} secret - The webhook secret.
@@ -63,12 +84,12 @@ async function emitWebhook(event, invoiceId, additionalData = {}) {
       return;
     }
 
-    const payload = {
+    const payload = sortKeys({
       event,
       timestamp: new Date().toISOString(),
       invoiceId,
       ...additionalData,
-    };
+    });
 
     // Sign payload
     const body = JSON.stringify(payload);
@@ -93,9 +114,13 @@ async function emitWebhook(event, invoiceId, additionalData = {}) {
       clearTimeout(timeoutId);
     }
 
-    if (!response.ok) {
-      throw new Error(`Webhook responded with ${response.status}`);
-    }
+    await axios.post(webhook_url, rawBody, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Signature': signatureHeader,
+      },
+      timeout: 5000,
+    });
 
     logger.info({ event, invoiceId, tenant_id }, 'Webhook emitted successfully');
   } catch (error) {
