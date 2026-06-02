@@ -38,6 +38,7 @@ const logger = require('./logger');
 const { metricsAuth, metricsHandler } = require('./metrics');
 const smeRoutes = require('./routes/sme');
 const invoiceFileRoutes = require('./routes/invoiceFile');
+const auditTrailRoutes = require('./routes/auditTrail');
 
 /**
  * Returns a 403 JSON response only for the dedicated blocked-origin CORS error.
@@ -243,6 +244,7 @@ function createApp() {
   // ── 5. SME & Invoice File routes ─────────────────────────────────────────
   app.use('/api/sme', smeRoutes);
   app.use('/api/invoices', invoiceFileRoutes);
+  app.use('/api/admin/audit', auditTrailRoutes);
 
   // ── 6. Prometheus metrics ────────────────────────────────────────────────
   app.get('/metrics', metricsAuth, metricsHandler);

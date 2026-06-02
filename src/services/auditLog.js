@@ -137,13 +137,24 @@ function mapDbRowToAuditLog(row) {
 }
 
 /**
- * Retrieves audit logs from the database.
+ * Retrieves audit logs with optional filtering.
+ * 
+ * @param {Object} options Filter options
+ * @param {string} [options.resourceId] Filter by resource ID
+ * @param {string} [options.resourceType] Filter by resource type
+ * @param {string} [options.actor] Filter by actor
+ * @param {string} [options.action] Filter by action
+ * @param {string} [options.tenantId] Filter by tenant ID for isolation
+ * @param {number} [options.limit=100] Maximum number of records to return
+ * @param {number} [options.offset=0] Number of records to skip
+ * @returns {Array<Object>} Matching audit log entries (read-only copies)
  */
 async function getAuditLogs({
   resourceId = null,
   resourceType = null,
   actor = null,
   action = null,
+  tenantId = null,
   limit = 100,
   offset = 0,
 } = {}) {
@@ -157,6 +168,9 @@ async function getAuditLogs({
   if (limit !== Infinity) {
     query = query.limit(limit).offset(offset);
   }
+  if (tenantId) {
+    filtered = filtered.filter((log) => log.metadata && log.metadata.tenantId === tenantId);
+  }
 
   const rows = await query;
   return rows.map(mapDbRowToAuditLog);
@@ -164,28 +178,30 @@ async function getAuditLogs({
 
 /**
  * Retrieves audit logs for a specific invoice.
+ * Convenience method for invoice-specific queries.
+ * 
+ * @param {string} invoiceId Invoice resource ID
+ * @param {number} [limit=100] Maximum records to return
+ * @param {number} [offset=0] Records to skip (for pagination)
+ * @param {string} [tenantId] Tenant ID for isolation
+ * @returns {Array<Object>} Audit log entries for the invoice
  */
-async function getInvoiceAuditTrail(invoiceId, limit = 100) {
+function getInvoiceAuditTrail(invoiceId, limit = 100, offset = 0, tenantId = null) {
   return getAuditLogs({
     resourceId: invoiceId,
     resourceType: 'invoice',
     limit,
+    offset,
+    tenantId,
   });
 }
 
 /**
  * Counts total audit logs matching criteria.
  */
-async function countAuditLogs(options = {}) {
-  let query = db('audit_log_events').count('* as count');
-
-  if (options.resourceId) query = query.where('target_id', options.resourceId);
-  if (options.resourceType) query = query.where('target_type', options.resourceType);
-  if (options.actor) query = query.where('actor_id', options.actor);
-  if (options.action) query = query.where('action', options.action);
-
-  const result = await query.first();
-  return parseInt(result.count, 10) || 0;
+function countAuditLogs(options = {}) {
+  const logs = getAuditLogs({ ...options, limit: Infinity, offset: 0 });
+  return logs.length;
 }
 
 /**
@@ -240,6 +256,54 @@ async function exportAuditLogs({ limit = Infinity, format = 'json' } = {}) {
   return JSON.stringify(logs, null, 2);
 }
 
+/**
+ * Exports audit logs for a specific invoice as JSON or CSV.
+ * Secrets are redacted via sanitizeSensitiveData.
+ *
+ * @param {Object} options
+ * @param {string} options.invoiceId Invoice resource ID
+ * @param {number} [options.limit=100] Maximum records to export
+ * @param {string} [options.format='json'] 'json' or 'csv'
+ * @param {string} [options.tenantId] Tenant ID for isolation
+ * @returns {string} Formatted audit log output
+ */
+function exportInvoiceAuditLogs({ invoiceId, limit = 100, format = 'json', tenantId = null } = {}) {
+  const logs = getAuditLogs({
+    resourceId: invoiceId,
+    resourceType: 'invoice',
+    limit,
+    offset: 0,
+    tenantId,
+  });
+
+  if (format === 'csv') {
+    const escapeCsv = (val) => {
+      const str = val == null ? '' : String(val);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+    const headers = 'id,timestamp,actor,action,resourceType,resourceId,statusCode,ipAddress,userAgent';
+    const rows = logs.map((log) =>
+      [
+        escapeCsv(log.id),
+        escapeCsv(log.timestamp),
+        escapeCsv(log.actor),
+        escapeCsv(log.action),
+        escapeCsv(log.resourceType),
+        escapeCsv(log.resourceId),
+        log.statusCode,
+        escapeCsv(log.ipAddress),
+        escapeCsv(log.userAgent),
+      ].join(',')
+    );
+    return rows.length > 0 ? `${headers}\n${rows.join('\n')}` : headers;
+  }
+
+  return JSON.stringify(logs, null, 2);
+}
+
 module.exports = {
   createAuditLog,
   getAuditLogs,
@@ -247,6 +311,8 @@ module.exports = {
   countAuditLogs,
   clearAuditLogs,
   exportAuditLogs,
+  exportInvoiceAuditLogs,
+  // Exported for testing purposes
   generateAuditLogId,
   sanitizeSensitiveData,
   calculateChanges,
