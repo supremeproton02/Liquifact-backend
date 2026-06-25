@@ -52,6 +52,12 @@ const TERMINAL_REASON_REQUIRED_STATES = [
 
 const MAX_TRANSITION_REASON_LENGTH = 1024;
 
+/**
+ * Normalizes and sanitizes a transition reason string.
+ *
+ * @param {*} reason - Raw reason input.
+ * @returns {string|null} Sanitized reason, or null if absent or empty.
+ */
 function normalizeTransitionReason(reason) {
   if (reason === null || reason === undefined) {
     return null;
