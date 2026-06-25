@@ -930,6 +930,46 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming, local checks, testing 
 
 ---
 
+## Notifications
+
+### Maturity Reminders
+
+The backend sends maturity reminders to relevant parties before invoices reach their settlement date. Email delivery includes built-in resiliency:
+
+- **Exponential backoff**: Transient SMTP failures (4xx, network errors) are automatically retried with configurable backoff (default: 3 attempts, ~1s base delay, doubling each attempt)
+- **Error classification**: Permanent SMTP failures (5xx, invalid recipient) fail immediately without retry to avoid wasting resources
+- **Dead-lettering**: Emails that fail after all retries are dead-lettered to an in-memory queue for manual inspection and recovery
+- **Observability**: Prometheus counters track delivery attempts, successes, and dead-lettered messages with fine-grained failure reasons
+
+#### Configuration
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SMTP_HOST` | - | SMTP server hostname |
+| `SMTP_PORT` | 587 | SMTP server port |
+| `SMTP_USER` | - | SMTP authenticated username |
+| `SMTP_PASS` | - | SMTP authenticated password |
+| `SMTP_FROM` | `noreply@liquifact.com` | Sender email address |
+| `SMTP_MAX_RETRIES` | 3 | Maximum retry attempts for transient failures |
+
+When `SMTP_HOST` is unset, the system runs in **dry-run** mode (logs to console instead of sending real emails), which is ideal for local development and CI testing.
+
+#### Metrics
+
+Three Prometheus counters track reminder delivery:
+
+```
+maturity_reminder_delivery_attempts_total{job_type="maturity_reminder"}    # Each attempt (including retries)
+maturity_reminder_delivery_success_total{job_type="maturity_reminder"}     # Successful deliveries
+maturity_reminder_dead_letter_total{job_type,reason}                       # Dead-lettered reminders
+  ├─ reason="permanent_error"      # Permanent SMTP failures (5xx)
+  └─ reason="max_retries_exceeded" # Exhausted all transient retries
+```
+
+See [`docs/email-ops.md`](./docs/email-ops.md) for full technical details on retry logic, error classification, and dead-letter queue management.
+
+---
+
 ## Webhooks
 
 LiquiFact delivers signed webhook callbacks to tenant-configured endpoints whenever an invoice transitions between states (e.g. `pending → approved`, `approved → linked_escrow`).
