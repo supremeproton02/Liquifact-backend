@@ -580,4 +580,15 @@ describe('DELETE /v1/invoices/:id — soft delete', () => {
     const res = await deleteInvoiceRequest(TENANT_A, 'inv_not_here');
     expect(res.status).toBe(404);
   });
+
+  it('rejects deletion of invoices in locked statuses with 422', async () => {
+    const created = await postInvoice(TENANT_A, { amount: 420, customer: 'Locked Delete Co' });
+    const invoiceId = created.body.data.invoice_id;
+
+    // Mark invoice as settled in DB directly
+    await db('invoices').where({ invoice_id: invoiceId }).update({ status: 'settled' });
+
+    const res = await deleteInvoiceRequest(TENANT_A, invoiceId);
+    expect(res.status).toBe(422);
+  });
 });
