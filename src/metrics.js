@@ -386,5 +386,8 @@ module.exports = {
   escrowReconciliationMismatchedInvoicesGauge,
   escrowReconciliationDriftMagnitudeGauge,
   escrowReconciliationDriftAlertsTotal,
+  maturityReminderDeliveryAttemptsTotal,
+  maturityReminderDeliverySuccessTotal,
+  maturityReminderDeadLetterTotal,
   readinessGauge,
 };
