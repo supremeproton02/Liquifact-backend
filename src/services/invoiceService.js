@@ -13,6 +13,8 @@
  *   createInvoice(data, tenantId)         — insert with generated invoice_id
  *   updateInvoice(id, updates, tenantId)  — tenant-scoped UPDATE
  *   deleteInvoice(id, tenantId)           — soft-delete
+ *   resolveInvoiceForTenant(id, tenantId) — tenant-scoped lookup for state routes
+ *   transitionInvoice(id, target, tenantId, opts) — execute + persist transition
  *
  * KYC helpers (in-memory mockInvoices — retained for test compatibility):
  *   getInvoicesByKycStatus(userId, kycStatus)
@@ -26,6 +28,7 @@
 const db = require('../db/knex');
 const { applyQueryOptions } = require('../utils/queryBuilder');
 const logger = require('../logger');
+const { executeTransition } = require('./invoiceStateMachine');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -303,64 +306,105 @@ async function deleteInvoice(id, tenantId) {
 }
 
 /**
- * Aggregates invoice counts by status/category, scoped to tenant and SME owner.
+ * Parses invoice metadata from a DB row (JSON string or object) into a plain object.
  *
- * Scopes queries to tenant_id and sme_id, excluding soft-deleted invoices.
- * Categories are mapped as follows:
- * - open: pending_verification, verified
- * - funded: funded
- * - settled: settled, paid
- * - defaulted: defaulted
- * Other statuses (e.g. withdrawn) are excluded.
- *
- * @param {string} tenantId - Tenant identifier.
- * @param {string} smeId - SME owner identifier.
- * @returns {Promise<Object>} Object mapping categories to counts.
- * @throws {TypeError} When tenantId or smeId is missing.
+ * @param {string|object|null|undefined} raw - Raw metadata column value.
+ * @returns {object} Parsed metadata object (empty when absent or invalid).
  */
-async function getSmeInvoiceCounts(tenantId, smeId) {
+function parseInvoiceMetadata(raw) {
+  if (!raw) {
+    return {};
+  }
+  if (typeof raw === 'object') {
+    return { ...raw };
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Resolves an invoice for the authenticated tenant.
+ * Returns null when the invoice does not exist, is soft-deleted, or belongs to
+ * another tenant — callers should respond with 404 without leaking existence.
+ *
+ * @param {string} invoiceId - Public invoice_id (e.g. "inv-001").
+ * @param {string} tenantId  - Tenant identifier from extractTenant middleware.
+ * @returns {Promise<object|null>} Invoice row or null.
+ * @throws {TypeError} When tenantId is missing.
+ */
+async function resolveInvoiceForTenant(invoiceId, tenantId) {
   if (!tenantId) {
     throw new TypeError('tenantId is required');
   }
-  if (!smeId) {
-    throw new TypeError('smeId is required');
+  return module.exports.getInvoiceById(invoiceId, tenantId);
+}
+
+/**
+ * Executes a validated state transition via the invoice state machine and
+ * persists the resulting status to the database. Status is always derived from
+ * the state machine result — client-supplied status fields are never written.
+ *
+ * Optionally merges `escrowId` into the invoice metadata when linking escrow.
+ *
+ * @param {string} invoiceId   - Public invoice_id.
+ * @param {string} targetState - Desired lifecycle state from the state machine.
+ * @param {string} tenantId    - Tenant identifier.
+ * @param {object} [options={}] - Transition context.
+ * @param {string} options.actor - Actor performing the transition.
+ * @param {string} [options.reason] - Human-readable reason (required for terminal targets).
+ * @param {string} [options.ipAddress] - Request source IP.
+ * @param {string} [options.userAgent] - Request user agent.
+ * @param {object} [options.metadata] - Additional audit metadata.
+ * @param {string|null|undefined} [options.escrowId] - Escrow contract ID to persist in metadata.
+ * @returns {Promise<object>} State-machine transition result (previousState, newState, auditLog, …).
+ * @throws {Error} With `.code` / `.allowedTransitions` when validation fails.
+ * @throws {Error} With `.code = 'INVOICE_NOT_FOUND'` and `.statusCode = 404` when not found.
+ */
+async function transitionInvoice(invoiceId, targetState, tenantId, options = {}) {
+  const invoice = await module.exports.resolveInvoiceForTenant(invoiceId, tenantId);
+  if (!invoice) {
+    const err = new Error('Invoice not found');
+    err.code = 'INVOICE_NOT_FOUND';
+    err.statusCode = 404;
+    throw err;
   }
 
-  const rows = await db('invoices')
-    .select('status')
-    .count('* as count')
-    .where({ tenant_id: tenantId, sme_id: smeId })
-    .whereNull('deleted_at')
-    .groupBy('status');
+  const {
+    actor,
+    reason,
+    ipAddress = 'unknown',
+    userAgent = 'unknown',
+    metadata = {},
+    escrowId,
+  } = options;
 
-  const metrics = {
-    open: 0,
-    funded: 0,
-    settled: 0,
-    defaulted: 0,
-  };
-
-  const OPEN_STATUSES = ['pending_verification', 'verified'];
-  const FUNDED_STATUSES = ['funded'];
-  const SETTLED_STATUSES = ['settled', 'paid'];
-  const DEFAULTED_STATUSES = ['defaulted'];
-
-  rows.forEach((row) => {
-    const status = row.status;
-    const count = Number(row.count) || 0;
-
-    if (OPEN_STATUSES.includes(status)) {
-      metrics.open += count;
-    } else if (FUNDED_STATUSES.includes(status)) {
-      metrics.funded += count;
-    } else if (SETTLED_STATUSES.includes(status)) {
-      metrics.settled += count;
-    } else if (DEFAULTED_STATUSES.includes(status)) {
-      metrics.defaulted += count;
-    }
+  const result = await executeTransition({
+    invoiceId,
+    currentState: invoice.status,
+    targetState,
+    actor,
+    reason,
+    ipAddress,
+    userAgent,
+    metadata,
   });
 
-  return metrics;
+  const updates = { status: result.newState };
+
+  if (escrowId !== undefined) {
+    const meta = parseInvoiceMetadata(invoice.metadata);
+    if (escrowId) {
+      meta.escrowId = escrowId;
+    }
+    updates.metadata = JSON.stringify(meta);
+  }
+
+  await module.exports.updateInvoice(invoiceId, updates, tenantId);
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +474,9 @@ module.exports = {
   createInvoice,
   updateInvoice,
   deleteInvoice,
-  getSmeInvoiceCounts,
+  resolveInvoiceForTenant,
+  transitionInvoice,
+  parseInvoiceMetadata,
   // KYC helpers (in-memory)
   getInvoicesByKycStatus,
   updateInvoiceKycStatus,
