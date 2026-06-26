@@ -61,6 +61,9 @@ Secret values are marked **Secret** and must come from local `.env` files, deplo
 | `AWS_ACCESS_KEY_ID` | string | None | Required for S3 uploads | **Secret** | [`src/services/storage.js`](../src/services/storage.js) |
 | `AWS_SECRET_ACCESS_KEY` | string | None | Required for S3 uploads | **Secret** | [`src/services/storage.js`](../src/services/storage.js) |
 | `S3_BUCKET` | string | `liquifact-invoices` | No | No | [`src/services/storage.js`](../src/services/storage.js) |
+| `S3_HEALTHCHECK_ENABLED` | boolean string | enabled | No | No | [`src/services/storage.js`](../src/services/storage.js), [`src/services/health.js`](../src/services/health.js) |
+| `STORAGE_IN_MEMORY` | boolean string | unset; auto-on when `NODE_ENV=test` | No | No | [`src/services/storage.js`](../src/services/storage.js) |
+| `STORAGE_HEALTHCHECK_TIMEOUT_MS` | integer milliseconds | `5000` | No | No | [`src/services/storage.js`](../src/services/storage.js) |
 | `METRICS_BEARER_TOKEN` | string | Loopback-only metrics access when unset | Recommended in production | **Secret** | [`src/metrics.js`](../src/metrics.js) |
 | `API_KEYS` | semicolon-separated JSON objects | Empty registry | Required for API-key clients | **Secret** | [`src/config/apiKeys.js`](../src/config/apiKeys.js), [`src/middleware/apiKeyAuth.js`](../src/middleware/apiKeyAuth.js) |
 | `RATE_LIMIT_WINDOW_MS` | integer milliseconds | `900000` | No | No | [`src/middleware/rateLimit.js`](../src/middleware/rateLimit.js) |

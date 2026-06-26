@@ -84,6 +84,11 @@ try {
   };
 }
 
+// Hoisted so the gauges below can register against it without a TDZ error.
+// The `client.collectDefaultMetrics` registration deliberately stays AFTER
+// all gauges to ensure they're not double-registered.
+const registry = new client.Registry();
+
 const METRIC_REFRESH_INTERVAL_MS = 5000;
 const registeredJobQueues = new Set();
 const registeredWorkers = new Set();
@@ -344,9 +349,6 @@ async function metricsHandler(_req, res) {
   res.set('Content-Type', registry.contentType);
   res.end(await registry.metrics());
 }
-
-/** Shared registry — exported so tests can reset it between runs. */
-const registry = new client.Registry();
 
 if (typeof client.collectDefaultMetrics === 'function') {
   client.collectDefaultMetrics({ register: registry });
