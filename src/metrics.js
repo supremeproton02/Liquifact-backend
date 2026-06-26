@@ -322,6 +322,18 @@ const footprintCacheEvictionsTotal = new client.Counter({
 });
 
 /**
+ * Counter: Soroban circuit breaker state transitions.
+ * Labelled by the new state name to allow counting transitions into each state.
+ * @type {import('prom-client').Counter}
+ */
+const sorobanCircuitBreakerStateTransitionsTotal = new client.Counter({
+  name: 'soroban_circuit_breaker_state_transitions_total',
+  help: 'Total number of Soroban circuit breaker state transitions, labelled by state',
+  labelNames: ['state'],
+  registers: [registry],
+});
+
+/**
  * Gauge: Readiness state (1 = ready, 0 = not ready).
  * Updated by performReadinessChecks() in the health service.
  * @type {import('prom-client').Gauge}

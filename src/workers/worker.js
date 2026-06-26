@@ -239,5 +239,37 @@ class BackgroundWorker {
   }
 }
 
+
+/**
+ * Build a compact execution context object for logging from a job record.
+ * Only a safe subset of payload keys are copied to avoid leaking secrets.
+ *
+ * @param {Object} job - Job record from the queue
+ * @returns {Object} Context with jobId, jobType, attempt, and allowed payload keys
+ */
+function buildJobContext(job) {
+  if (!job || typeof job !== 'object') return {};
+  const ctx = {
+    jobId: job.id,
+    jobType: job.type,
+    attempt: job.attempts ?? job.attempt ?? 1,
+  };
+
+  const CONTEXT_KEYS = new Set(['tenantId', 'invoiceId', 'correlationId', 'performedBy', 'policyId', 'batchSize']);
+  const payload = job.payload || {};
+  if (payload && typeof payload === 'object') {
+    for (const k of CONTEXT_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(payload, k)) {
+        const v = payload[k];
+        // only include primitive values to avoid leaking nested secrets
+        if (v === null || ['string', 'number', 'boolean'].includes(typeof v)) {
+          ctx[k] = v;
+        }
+      }
+    }
+  }
+  return ctx;
+}
+
 module.exports = BackgroundWorker;
 module.exports.buildJobContext = buildJobContext;
