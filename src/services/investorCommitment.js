@@ -245,22 +245,6 @@ async function updateCommitment(id, fields) {
 const _lockStore = new Map();
 
 /**
- * Validates a Stellar account address (G... or C..., 56 chars, base32).
- *
- * @param {string} address
- * @returns {{ valid: boolean, reason?: string }}
- */
-function validateAddress(address) {
-  if (!address || typeof address !== 'string') {
-    return { valid: false, reason: 'funderAddress is required and must be a string' };
-  }
-  if (!/^[GC][A-Z2-7]{55}$/.test(address)) {
-    return { valid: false, reason: `invalid Stellar address: "${address}"` };
-  }
-  return { valid: true };
-}
-
-/**
  * Upsert a lock record into the in-memory store.
  *
  * @param {Object} params
