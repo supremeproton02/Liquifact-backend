@@ -53,6 +53,9 @@ Part of the LiquiFact stack: frontend (Next.js) | backend (this repo) | contract
 
 ---
 
+## Configuration Reference
+
+For a complete, tested mapping of every environment variable to its type, default, consumer, and secret status, see [`docs/configuration.md`](./docs/configuration.md).
 ## Response Caching
 
 The backend includes a TTL-based response-cache middleware backed by an in-memory store. Caching is applied to expensive read endpoints to reduce latency and database load.
