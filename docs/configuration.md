@@ -36,6 +36,7 @@ Secret values are marked **Secret** and must come from local `.env` files, deplo
 | `BODY_LIMIT_URLENCODED` | size string | `50kb` | No | No | [`src/middleware/bodySizeLimits.js`](../src/middleware/bodySizeLimits.js) |
 | `BODY_LIMIT_RAW` | size string | `1mb` | No | No | [`src/middleware/bodySizeLimits.js`](../src/middleware/bodySizeLimits.js) |
 | `BODY_LIMIT_INVOICE` | size string | `512kb` | No | No | [`src/middleware/bodySizeLimits.js`](../src/middleware/bodySizeLimits.js), [`src/services/storage.js`](../src/services/storage.js) |
+| `INVOICE_FILE_MAX_SIZE` | size string | `5mb` | No | No | [`src/routes/invoiceFile.js`](../src/routes/invoiceFile.js) |
 | `ESCROW_SIGNING_MODE` | enum: `delegated`, `custodial`, `stubbed` | `stubbed` in code; `delegated` in template | No | No | [`src/services/escrowSubmit.js`](../src/services/escrowSubmit.js) |
 | `STELLAR_NETWORK_PASSPHRASE` | string | None in escrow submission | Required outside `stubbed` escrow mode | No | [`src/services/escrowSubmit.js`](../src/services/escrowSubmit.js) |
 | `NETWORK_PASSPHRASE` | string | `Test SDF Network ; September 2015` | No | No | [`src/config/index.js`](../src/config/index.js), [`src/config/stellar.js`](../src/config/stellar.js) |
