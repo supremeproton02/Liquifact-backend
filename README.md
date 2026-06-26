@@ -1001,6 +1001,7 @@ The backend now supports a database-backed append-only audit log for:
 
 - admin actions (for example, KYC state transitions or key-rotation operations)
 - webhook dispatch outcomes (success/failure with redacted payload fields)
+- retention policy and legal-hold mutations (create/update/release with before/after snapshots)
 
 ### Database migrations
 
@@ -1016,7 +1017,9 @@ Run SQL migrations in order:
 - `src/middleware/auditLog.js` attaches `req.audit` helpers:
   - `req.audit.logAdminAction(...)`
   - `req.audit.logWebhookDelivery(...)`
+  - `req.audit.logRetentionMutation(...)` / `emitRetentionAuditSafely(req, ...)` for retention routes
 - successful `POST|PUT|PATCH|DELETE` requests under `/api/admin/*` are auto-logged
+- retention routes (`POST/PUT /api/retention/policies`, `POST /api/retention/legal-holds`, `POST .../release`) emit `retention_mutation` events with tenant-scoped metadata
 - sensitive fields are redacted before persistence (`password`, `token`, `secret`, `apiKey`, `privateKey`, etc.)
 
 ### Audit trail export

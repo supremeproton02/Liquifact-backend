@@ -73,6 +73,26 @@ The system currently supports purging the following PII fields from invoices:
 - Tracks who performed the operation and when
 - Immutable audit records for compliance
 
+#### Policy and legal-hold mutations (`audit_log_events`)
+
+In addition to purge execution records in `retention_audit_log`, every retention **policy create/update** and **legal-hold create/release** emits an append-only event to `audit_log_events` via `src/services/auditLogStore.js`. Each event captures:
+
+| Field | Description |
+| --- | --- |
+| `actor` | Admin JWT subject or API client ID |
+| `tenantId` | Tenant scope (stored in JSON metadata for export filtering) |
+| `target_id` | Policy UUID or legal-hold UUID |
+| `before` / `after` | Redacted snapshots of the mutated record (release includes full hold trace) |
+
+Event actions:
+
+- `retention.policy.create`
+- `retention.policy.update`
+- `retention.legal_hold.create`
+- `retention.legal_hold.release`
+
+Audit persistence failures are logged server-side but do **not** roll back the primary mutation. Sensitive metadata keys (`password`, `token`, `secret`, `apiKey`, etc.) are redacted before write, consistent with admin audit events.
+
 ### Dry Run Mode
 - Safe simulation without data modification
 - Validates eligibility and legal hold status
