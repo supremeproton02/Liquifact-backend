@@ -117,6 +117,42 @@ const escrowReconciliationMismatches = new client.Counter({
 });
 
 /**
+ * Counter: Maturity reminder email delivery attempts.
+ * Incremented for each attempt to send a maturity reminder email (including retries).
+ * @type {import('prom-client').Counter}
+ */
+const maturityReminderDeliveryAttemptsTotal = new client.Counter({
+  name: 'maturity_reminder_delivery_attempts_total',
+  help: 'Total number of maturity reminder email delivery attempts (each retry counts)',
+  labelNames: ['job_type'],
+  registers: [registry],
+});
+
+/**
+ * Counter: Successful maturity reminder email deliveries.
+ * Incremented when a maturity reminder email is sent successfully.
+ * @type {import('prom-client').Counter}
+ */
+const maturityReminderDeliverySuccessTotal = new client.Counter({
+  name: 'maturity_reminder_delivery_success_total',
+  help: 'Total number of maturity reminder emails delivered successfully',
+  labelNames: ['job_type'],
+  registers: [registry],
+});
+
+/**
+ * Counter: Dead-lettered maturity reminder emails.
+ * Incremented when a maturity reminder fails permanently (permanent SMTP error or max retries exceeded).
+ * @type {import('prom-client').Counter}
+ */
+const maturityReminderDeadLetterTotal = new client.Counter({
+  name: 'maturity_reminder_dead_letter_total',
+  help: 'Total number of maturity reminder emails dead-lettered due to permanent failures or retry exhaustion',
+  labelNames: ['job_type', 'reason'],
+  registers: [registry],
+});
+
+/**
  * Counter: Footprint cache hits.
  * @type {import('prom-client').Counter}
  */
