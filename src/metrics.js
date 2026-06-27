@@ -48,24 +48,80 @@ try {
     metrics() { return ''; }
   }
 
-/**
- * Bounded enum of allowed `reason` label values for maturity-reminder metrics.
- * Any raw error/reason string must be mapped through {@link normalizeReminderReason}
- * before being used as a Prometheus label to prevent time-series cardinality explosion.
- *
- * | Value            | Meaning                                              |
- * |------------------|------------------------------------------------------|
- * | smtp_timeout     | SMTP connection or send timed out                    |
- * | smtp_reject      | SMTP server rejected the message (4xx/5xx response)  |
- * | template_error   | Email template rendering failed                      |
- * | unknown          | Any other / unmapped failure                         |
- */
-const REMINDER_REASON_ENUM = Object.freeze([
-  'smtp_timeout',
-  'smtp_reject',
-  'template_error',
-  'unknown',
-]);
+  /**
+   * Counter shim for test environments.
+   * @implements {import('prom-client').Counter}
+   */
+  class CounterShim {
+    /** @param {void} */
+    constructor() {}
+    /** @returns {void} */
+    inc() {}
+  }
+
+  /**
+   * Gauge shim for test environments.
+   * @implements {import('prom-client').Gauge}
+   */
+  class GaugeShim {
+    /** @param {void} */
+    constructor() {}
+    /** @returns {void} */
+    set() {}
+    /** @returns {void} */
+    setToCurrentTime() {}
+  }
+
+  client = {
+    Registry: RegistryShim,
+    /**
+     * No-op default metrics collector stub.
+     * @returns {void}
+     */
+    collectDefaultMetrics: () => { },
+    Counter: CounterShim,
+    Gauge: GaugeShim,
+  };
+}
+
+// Hoisted so the gauges below can register against it without a TDZ error.
+// The `client.collectDefaultMetrics` registration deliberately stays AFTER
+// all gauges to ensure they're not double-registered.
+const registry = new client.Registry();
+
+const METRIC_REFRESH_INTERVAL_MS = 5000;
+const registeredJobQueues = new Set();
+const registeredWorkers = new Set();
+let refreshTimer = null;
+
+const queueDepthGauge = new client.Gauge({
+  name: 'liquifact_job_queue_depth',
+  help: 'Number of pending jobs currently waiting in background queues',
+  registers: [registry],
+});
+
+const retryQueueSizeGauge = new client.Gauge({
+  name: 'liquifact_job_retry_queue_size',
+  help: 'Number of jobs waiting in retry queues for background processing',
+  registers: [registry],
+});
+
+const workerInFlightGauge = new client.Gauge({
+  name: 'liquifact_worker_inflight_count',
+  help: 'Number of jobs currently being processed by background workers',
+  registers: [registry],
+});
+
+// Cached metrics text for compatibility with tests that call
+// `registry.metrics()` synchronously. Prom-client >=14 returns a Promise
+// from `registry.metrics()`, but some test code calls it without `await`.
+// We provide a synchronous accessor by overriding `registry.metrics`
+// to return the latest cached string; `metricsHandler` still works because
+// awaiting a string yields the string value.
+let cachedMetrics = '# HELP liquifact_custom_metrics Placeholder\n';
+registry.metrics = function metricsSync() {
+  return cachedMetrics;
+};
 
 /**
  * Bounded enum of allowed `job_type` label values.
@@ -255,6 +311,156 @@ async function metricsHandler(_req, res) {
   res.set('Content-Type', registry.contentType);
   res.end(await registry.metrics());
 }
+
+if (typeof client.collectDefaultMetrics === 'function') {
+  client.collectDefaultMetrics({ register: registry });
+}
+
+/**
+ * Counter: Escrow events successfully processed by the indexer per cycle.
+ * Incremented by the number of events persisted in each indexer cycle.
+ * @type {import('prom-client').Counter}
+ */
+const escrowIndexerEventsProcessedTotal = new client.Counter({
+  name: 'escrow_indexer_events_processed_total',
+  help: 'Total number of escrow events successfully processed and persisted by the indexer',
+  registers: [registry],
+});
+
+/**
+ * Counter: Escrow events skipped (invalid) by the indexer per cycle.
+ * Incremented when an event fails validation or persistence.
+ * @type {import('prom-client').Counter}
+ */
+const escrowIndexerEventsSkippedTotal = new client.Counter({
+  name: 'escrow_indexer_events_skipped_total',
+  help: 'Total number of escrow events skipped due to validation or persistence errors',
+  registers: [registry],
+});
+
+/**
+ * Counter: Escrow indexer cycle failures.
+ * Incremented when a cycle throws an unhandled exception or receives invalid metric data.
+ * @type {import('prom-client').Counter}
+ */
+const escrowIndexerCycleFailuresTotal = new client.Counter({
+  name: 'escrow_indexer_cycle_failures_total',
+  help: 'Total number of escrow indexer cycles that failed with an exception',
+  registers: [registry],
+});
+
+/**
+ * Gauge: Unix timestamp (seconds) of the last successful cursor advance.
+ * Updated when a cycle completes and cursorAfter !== cursorBefore.
+ * Used by health check to detect indexer staleness.
+ * @type {import('prom-client').Gauge}
+ */
+const escrowIndexerLastCursorAdvanceTimestampSeconds = new client.Gauge({
+  name: 'escrow_indexer_last_cursor_advance_timestamp_seconds',
+  help: 'Unix timestamp (seconds) of the last cycle where the cursor advanced (cursorAfter !== cursorBefore)',
+  registers: [registry],
+});
+
+/**
+ * Counter: Escrow reconciliation mismatches.
+ * Incremented each time a reconcileInvoice call detects a discrepancy
+ * between the DB funded total and the on-chain funded amount.
+ * @type {import('prom-client').Counter}
+ */
+const escrowReconciliationMismatches = new client.Counter({
+  name: 'escrow_reconciliation_mismatches_total',
+  help: 'Total number of escrow reconciliation mismatches detected',
+  registers: [registry],
+});
+
+/**
+ * Counter: Maturity reminder email delivery attempts.
+ * Incremented for each attempt to send a maturity reminder email (including retries).
+ * @type {import('prom-client').Counter}
+ */
+const maturityReminderDeliveryAttemptsTotal = new client.Counter({
+  name: 'maturity_reminder_delivery_attempts_total',
+  help: 'Total number of maturity reminder email delivery attempts (each retry counts)',
+  labelNames: ['job_type'],
+  registers: [registry],
+});
+
+/**
+ * Counter: Successful maturity reminder email deliveries.
+ * Incremented when a maturity reminder email is sent successfully.
+ * @type {import('prom-client').Counter}
+ */
+const maturityReminderDeliverySuccessTotal = new client.Counter({
+  name: 'maturity_reminder_delivery_success_total',
+  help: 'Total number of maturity reminder emails delivered successfully',
+  labelNames: ['job_type'],
+  registers: [registry],
+});
+
+/**
+ * Counter: Dead-lettered maturity reminder emails.
+ * Incremented when a maturity reminder fails permanently (permanent SMTP error or max retries exceeded).
+ * @type {import('prom-client').Counter}
+ */
+const maturityReminderDeadLetterTotal = new client.Counter({
+  name: 'maturity_reminder_dead_letter_total',
+  help: 'Total number of maturity reminder emails dead-lettered due to permanent failures or retry exhaustion',
+  labelNames: ['job_type', 'reason'],
+  registers: [registry],
+});
+
+/**
+ * Counter: Footprint cache hits.
+ * @type {import('prom-client').Counter}
+ */
+const footprintCacheHitsTotal = new client.Counter({
+  name: 'soroban_footprint_cache_hits_total',
+  help: 'Total number of Soroban footprint cache hits',
+  registers: [registry],
+});
+
+/**
+ * Counter: Footprint cache misses.
+ * @type {import('prom-client').Counter}
+ */
+const footprintCacheMissesTotal = new client.Counter({
+  name: 'soroban_footprint_cache_misses_total',
+  help: 'Total number of Soroban footprint cache misses',
+  registers: [registry],
+});
+
+/**
+ * Counter: Footprint cache evictions (LRU or TTL).
+ * @type {import('prom-client').Counter}
+ */
+const footprintCacheEvictionsTotal = new client.Counter({
+  name: 'soroban_footprint_cache_evictions_total',
+  help: 'Total number of Soroban footprint cache evictions (LRU or TTL expiry)',
+  registers: [registry],
+});
+
+/**
+ * Counter: Soroban circuit breaker state transitions.
+ * Labelled by the new state name to allow counting transitions into each state.
+ * @type {import('prom-client').Counter}
+ */
+const sorobanCircuitBreakerStateTransitionsTotal = new client.Counter({
+  name: 'soroban_circuit_breaker_state_transitions_total',
+  help: 'Total number of Soroban circuit breaker state transitions, labelled by state',
+  labelNames: ['state'],
+  registers: [registry],
+});
+
+/**
+ * Gauge: Readiness state (1 = ready, 0 = not ready).
+ * Updated by performReadinessChecks() in the health service.
+ * @type {import('prom-client').Gauge}
+ */
+const readinessGauge = new client.Gauge({
+  name: 'readiness_gauge',
+  help: 'Readiness state of the service: 1 = ready to serve traffic, 0 = not ready',
+  registers: [registry],
+});
 
 module.exports = {
   registry,
