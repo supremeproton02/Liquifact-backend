@@ -184,6 +184,65 @@ The application exposes Prometheus metrics on `GET /metrics` (subject to the sam
 
 These gauges are updated by sampling registered `JobQueue` and `BackgroundWorker` instances and are intentionally bounded to avoid high-cardinality labels.
 
+### Body-size limit rejection metrics
+
+The `body_size_limit_rejections_total` counter tracks every request rejected with HTTP 413 Payload Too Large, labelled by the body parser type that rejected it:
+
+| Label `type` | Trigger |
+|---|---|
+| `json` | Rejected by the global JSON body parser (default 100 KB) |
+| `urlencoded` | Rejected by the URL-encoded body parser (default 50 KB) |
+| `invoice` | Rejected by the stricter invoice upload parser (default 512 KB) |
+| `unknown` | Rejected by the generic error handler when content-type cannot be determined |
+
+This counter is designed for **DoS detection**: a sudden spike in any `type` label indicates a potential attack attempting to overwhelm the API with oversized payloads.
+
+#### DoS detection alert rules
+
+The following PromQL alerts detect rapid increases in body-size rejections. A sustained rate of 10+ rejections per minute is a strong signal of a volumetric DoS attempt.
+
+```promql
+# Alert when JSON body-size rejections exceed 10 per minute (potential DoS)
+rate(body_size_limit_rejections_total{type="json"}[5m]) > 0.167
+
+# Alert when urlencoded body-size rejections exceed 10 per minute
+rate(body_size_limit_rejections_total{type="urlencoded"}[5m]) > 0.167
+
+# Aggregate alert across ALL body-size limit types
+sum(rate(body_size_limit_rejections_total[5m])) > 0.167
+```
+
+**Tuning guidance:**
+
+| Environment | Suggested rate threshold | Rationale |
+|---|---|---|
+| Development / CI | `> 0.5` (30/min) | Higher baseline from automated test traffic |
+| Production (normal) | `> 0.167` (10/min) | Expected occasional oversized payloads from legitimate clients |
+| Production (locked down) | `> 0.017` (1/min) | Very low tolerance — almost all oversized payloads are malicious |
+
+For production deployments, include the full YAML alert rule from [`docs/prometheus-rules.yml`](./docs/prometheus-rules.yml).
+
+### Grafana dashboard
+
+Import the pre-built Grafana dashboard to visualize body-size limit rejection metrics over time:
+
+  1. Open Grafana → **+** → **Import**.
+  2. Upload or paste [`docs/grafana-dashboard.json`](./docs/grafana-dashboard.json).
+  3. Select your Prometheus data source.
+  4. Click **Import**.
+
+The dashboard includes the following panels:
+
+| Panel | Type | Description |
+|---|---|---|
+| Rejection Rate by Type | Time series | `rate(body_size_limit_rejections_total[5m])` per `type` label (json, urlencoded, invoice, unknown) + aggregate |
+| Current Rejection Rate | Stat | Live rate with green/yellow/red background thresholds matching alert severity |
+| Rejections by Type (Current) | Bar gauge | Instant per-type rates for quick scanning |
+| Cumulative Rejections (Last Hour) | Bar gauge | `increase()[1h]` per type — sustained values > 600 suggest probing |
+| Cumulative Rejections Over Time | Time series | Hourly increase per type over the selected time window |
+| Alert Threshold Reference | Bar gauge | Combined rate with visual threshold markers |
+| Historical Rejection Heatmap | Time series (step) | All-types aggregate with color-coded severity bands |
+
 ---
 
 ## KYC Provider Integration

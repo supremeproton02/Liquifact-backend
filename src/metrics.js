@@ -93,6 +93,13 @@ try {
   };
 }
 
+/** Shared registry — exported so tests can reset it between runs. */
+const registry = new client.Registry();
+
+if (typeof client.collectDefaultMetrics === 'function') {
+  client.collectDefaultMetrics({ register: registry });
+}
+
 const METRIC_REFRESH_INTERVAL_MS = 5000;
 const registeredJobQueues = new Set();
 const registeredWorkers = new Set();
@@ -119,16 +126,11 @@ const workerInFlightGauge = new client.Gauge({
   registers: [registry],
 });
 
-// Cached metrics text for compatibility with tests that call
-// `registry.metrics()` synchronously. Prom-client >=14 returns a Promise
-// from `registry.metrics()`, but some test code calls it without `await`.
-// We provide a synchronous accessor by overriding `registry.metrics`
-// to return the latest cached string; `metricsHandler` still works because
-// awaiting a string yields the string value.
+// Cached metrics text for compatibility with test environments where
+// prom-client is not available (shim). In production with the real
+// prom-client, `metricsHandler` calls the real `registry.metrics()`
+// which returns the full Prometheus exposition of ALL registered metrics.
 let cachedMetrics = '# HELP liquifact_custom_metrics Placeholder\n';
-registry.metrics = function metricsSync() {
-  return cachedMetrics;
-};
 
 /**
  * Bounded enum of allowed `reason` label values for maturity-reminder metrics.
@@ -173,7 +175,7 @@ const WEBHOOK_REPLAY_OUTCOME_ENUM = Object.freeze([
         queueLength += Number(stats.queueLength || 0);
         retryQueueLength += Number(stats.retryQueueLength || 0);
       }
-    } catch (_err) {
+    } catch {
       // Preserve existing metrics if a registered queue becomes invalid.
     }
   }
@@ -185,7 +187,7 @@ const WEBHOOK_REPLAY_OUTCOME_ENUM = Object.freeze([
       if (stats && typeof stats.processingCount === 'number') {
         workerInFlight += stats.processingCount;
       }
-    } catch (_err) {
+    } catch {
       // Preserve existing metrics if a registered worker becomes invalid.
     }
   }
@@ -196,6 +198,18 @@ const WEBHOOK_REPLAY_OUTCOME_ENUM = Object.freeze([
 
   // Build a minimal Prometheus text exposition that includes our gauges.
   // Keep labels bounded and avoid including payloads or per-job ids.
+  // The body-size-limit counter is read from the prom-client hashMap so it
+  // reflects all .inc() calls made since process start (or shim default 0).
+  let bodySizeRejectionsByType = '';
+  const hashMap = bodySizeLimitRejectionsTotal.hashMap || {};
+  for (const entry of Object.values(hashMap)) {
+    if (entry && typeof entry.value === 'number' && entry.value > 0) {
+      const labels = entry.labels || {};
+      const typeLabel = labels.type || 'unknown';
+      bodySizeRejectionsByType += `body_size_limit_rejections_total{type="${typeLabel}"} ${entry.value}\n`;
+    }
+  }
+
   cachedMetrics = '' +
     '# HELP liquifact_job_queue_depth Number of pending jobs waiting in queues\n' +
     '# TYPE liquifact_job_queue_depth gauge\n' +
@@ -205,11 +219,16 @@ const WEBHOOK_REPLAY_OUTCOME_ENUM = Object.freeze([
     `liquifact_job_retry_queue_size ${retryQueueLength}\n` +
     '# HELP liquifact_worker_inflight_count Number of jobs currently being processed\n' +
     '# TYPE liquifact_worker_inflight_count gauge\n' +
-    `liquifact_worker_inflight_count ${workerInFlight}\n`;
+    `liquifact_worker_inflight_count ${workerInFlight}\n` +
+    '# HELP body_size_limit_rejections_total Total number of request body-size limit rejections (413 Payload Too Large), labelled by limit type for DoS detection\n' +
+    '# TYPE body_size_limit_rejections_total counter\n' +
+    bodySizeRejectionsByType;
 }
 
 /**
- * Starts the metrics refresh interval timer if not already running.
+ * Starts the periodic metrics refresh interval timer.
+ * The timer is created once and automatically unref'd so it does not
+ * keep the Node.js process alive.
  * @returns {void}
  */
 function startMetricsRefresh() {
@@ -224,7 +243,7 @@ function startMetricsRefresh() {
 }
 
 /**
- * Stops the metrics refresh interval timer.
+ * Stops the periodic metrics refresh interval timer.
  * @returns {void}
  */
 function stopMetricsRefresh() {
@@ -284,7 +303,8 @@ const webhookReplayTotal = new client.Counter({
 });
 
 /**
- * Resets all registered job queues and workers for test isolation.
+ * Resets all metrics state for test isolation.
+ * Clears registered queues, workers, and resets gauge values to zero.
  * @returns {void}
  */
 function resetMetricsForTests() {
@@ -405,15 +425,16 @@ function metricsAuth(req, res, next) {
  */
 async function metricsHandler(_req, res) {
   res.set('Content-Type', registry.contentType);
-  res.end(await registry.metrics());
+  // Use the real prom-client registry.metrics() when available (production),
+  // which returns the full Prometheus exposition including ALL registered
+  // counters and gauges. Fall back to cachedMetrics for the shim (tests).
+  const metricsText = typeof client.Gauge !== 'function' || client.Gauge.name === 'GaugeShim'
+    ? cachedMetrics
+    : await registry.metrics();
+  res.end(metricsText);
 }
 
-
-
-if (typeof client.collectDefaultMetrics === 'function') {
-  client.collectDefaultMetrics({ register: registry });
-}
-
+/** Shared registry — exported so tests can reset it between runs. */
 /**
  * Counter: Escrow events successfully processed by the indexer per cycle.
  * Incremented by the number of events persisted in each indexer cycle.
@@ -468,6 +489,39 @@ const escrowIndexerLastCursorAdvanceTimestampSeconds = new client.Gauge({
 const escrowReconciliationMismatches = new client.Counter({
   name: 'escrow_reconciliation_mismatches_total',
   help: 'Total number of escrow reconciliation mismatches detected',
+  registers: [registry],
+});
+
+/**
+ * Gauge: Count of mismatched invoices from the most recent reconciliation run.
+ * Updated after each performReconciliation run completes.
+ * @type {import('prom-client').Gauge}
+ */
+const escrowReconciliationMismatchedInvoicesGauge = new client.Gauge({
+  name: 'escrow_reconciliation_mismatched_invoices',
+  help: 'Number of mismatched invoices from the most recent reconciliation run',
+  registers: [registry],
+});
+
+/**
+ * Gauge: Total absolute drift magnitude (sum of |DB - onChain|) from the most
+ * recent reconciliation run. Higher values indicate larger financial discrepancies.
+ * @type {import('prom-client').Gauge}
+ */
+const escrowReconciliationDriftMagnitudeGauge = new client.Gauge({
+  name: 'escrow_reconciliation_drift_magnitude',
+  help: 'Total absolute drift magnitude from the most recent reconciliation run',
+  registers: [registry],
+});
+
+/**
+ * Counter: Reconciliation runs that breached the configured drift threshold.
+ * Incremented when mismatches >= RECONCILIATION_DRIFT_THRESHOLD.
+ * @type {import('prom-client').Counter}
+ */
+const escrowReconciliationDriftAlertsTotal = new client.Counter({
+  name: 'escrow_reconciliation_drift_alerts_total',
+  help: 'Total number of reconciliation runs that breached the drift threshold',
   registers: [registry],
 });
 
@@ -561,65 +615,16 @@ const readinessGauge = new client.Gauge({
 });
 
 /**
- * Counter: Redis cache fail-open occurrences.
+ * Counter: Body size limit rejections.
+ * Incremented each time a request is rejected with 413 Payload Too Large.
+ * Labelled by `type` (json, urlencoded, invoice, raw, unknown) to allow
+ * detection of DoS attacks targeting specific body parsers.
  * @type {import('prom-client').Counter}
  */
-const redisCacheFailOpenTotal = new client.Counter({
-  name: 'redis_cache_fail_open_total',
-  help: 'Total number of times redis cache operations failed open',
-  registers: [registry],
-});
-
-/**
- * Helper to increment arbitrary metrics dynamically (used in some middleware).
- *
- * @param {string} name - Name of the metric.
- * @param {Object} [labels] - Labels for the metric.
- */
-function incrementMetric(name, labels = {}) {
-  try {
-    let metric = registry.getSingleMetric(name);
-    if (!metric) {
-      metric = new client.Counter({
-        name,
-        help: `Dynamic counter for ${name}`,
-        labelNames: Object.keys(labels),
-        registers: [registry],
-      });
-    }
-    metric.inc(labels);
-  } catch (_err) {
-    // Silently ignore or log error
-  }
-}
-
-/**
- * Gauge: Number of mismatched invoices.
- * @type {import('prom-client').Gauge}
- */
-const escrowReconciliationMismatchedInvoicesGauge = new client.Gauge({
-  name: 'escrow_reconciliation_mismatched_invoices',
-  help: 'Number of mismatched invoices detected in the latest reconciliation run',
-  registers: [registry],
-});
-
-/**
- * Gauge: Drift magnitude.
- * @type {import('prom-client').Gauge}
- */
-const escrowReconciliationDriftMagnitudeGauge = new client.Gauge({
-  name: 'escrow_reconciliation_drift_magnitude',
-  help: 'Magnitude of the drift detected in the latest reconciliation run',
-  registers: [registry],
-});
-
-/**
- * Counter: Total drift alerts.
- * @type {import('prom-client').Counter}
- */
-const escrowReconciliationDriftAlertsTotal = new client.Counter({
-  name: 'escrow_reconciliation_drift_alerts_total',
-  help: 'Total number of drift alerts triggered',
+const bodySizeLimitRejectionsTotal = new client.Counter({
+  name: 'body_size_limit_rejections_total',
+  help: 'Total number of request body-size limit rejections (413 Payload Too Large), labelled by limit type for DoS detection',
+  labelNames: ['type'],
   registers: [registry],
 });
 
@@ -631,6 +636,7 @@ module.exports = {
   registerWorker,
   refreshMetrics,
   resetMetricsForTests,
+  bodySizeLimitRejectionsTotal,
   escrowIndexerEventsProcessedTotal,
   escrowIndexerEventsSkippedTotal,
   escrowIndexerCycleFailuresTotal,
@@ -639,14 +645,12 @@ module.exports = {
   escrowReconciliationMismatchedInvoicesGauge,
   escrowReconciliationDriftMagnitudeGauge,
   escrowReconciliationDriftAlertsTotal,
-  maturityReminderDeliveryAttemptsTotal,
-  maturityReminderDeliverySuccessTotal,
-  maturityReminderDeadLetterTotal,
   footprintCacheHitsTotal,
   footprintCacheMissesTotal,
   footprintCacheEvictionsTotal,
   sorobanCircuitBreakerStateTransitionsTotal,
   readinessGauge,
-  redisCacheFailOpenTotal,
-  incrementMetric,
+  maturityReminderDeliveryAttemptsTotal,
+  maturityReminderDeliverySuccessTotal,
+  maturityReminderDeadLetterTotal,
 };
