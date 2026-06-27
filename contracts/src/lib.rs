@@ -4,6 +4,19 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol,
 };
 
+// ── Error Types ──────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TransferError {
+    /// The transfer amount must be strictly positive.
+    TransferAmountNotPositive,
+    /// The recipient's balance delta did not match the expected amount.
+    RecipientBalanceDeltaMismatch,
+    /// The sender's balance delta did not match the expected direction (non-positive for outbound, non-negative for inbound).
+    SenderBalanceDeltaMismatch,
+}
+
 // ── Storage keys ────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -26,6 +39,113 @@ pub struct Bounty {
     pub released:         bool,
 }
 
+// ── External Calls Helpers ───────────────────────────────────────────────────
+
+pub mod external_calls {
+    use super::*;
+    use soroban_sdk::{token, Address, Env};
+
+    /// Transfer tokens from an external sender into the contract, with strict balance-delta checks.
+    ///
+    /// # Invariants
+    /// - The amount must be strictly positive.
+    /// - The contract's balance must increase by exactly `amount` after the transfer.
+    /// - The sender's balance must not increase (i.e., delta ≤ 0) after the transfer.
+    ///
+    /// # Errors
+    /// - `TransferError::TransferAmountNotPositive` if `amount` is ≤ 0.
+    /// - `TransferError::RecipientBalanceDeltaMismatch` if contract balance delta ≠ `amount`.
+    /// - `TransferError::SenderBalanceDeltaMismatch` if sender balance delta > 0.
+    pub fn transfer_into_escrow_with_balance_checks(
+        env: &Env,
+        token: &Address,
+        from: &Address,
+        amount: i128,
+    ) -> Result<(), TransferError> {
+        if amount <= 0 {
+            return Err(TransferError::TransferAmountNotPositive);
+        }
+
+        let token_client = token::Client::new(env, token);
+        let contract_address = env.current_contract_address();
+
+        // Record pre-transfer balances
+        let pre_contract_balance = token_client.balance(&contract_address);
+        let pre_sender_balance = token_client.balance(from);
+
+        // Perform the transfer
+        token_client.transfer(from, &contract_address, &amount);
+
+        // Record post-transfer balances
+        let post_contract_balance = token_client.balance(&contract_address);
+        let post_sender_balance = token_client.balance(from);
+
+        // Verify contract received exactly the expected amount
+        let contract_delta = post_contract_balance - pre_contract_balance;
+        if contract_delta != amount {
+            return Err(TransferError::RecipientBalanceDeltaMismatch);
+        }
+
+        // Verify sender's balance did not increase
+        let sender_delta = post_sender_balance - pre_sender_balance;
+        if sender_delta > 0 {
+            return Err(TransferError::SenderBalanceDeltaMismatch);
+        }
+
+        Ok(())
+    }
+
+    /// Transfer tokens from the contract to an external recipient, with strict balance-delta checks.
+    ///
+    /// # Invariants
+    /// - The amount must be strictly positive.
+    /// - The recipient's balance must increase by exactly `amount` after the transfer.
+    /// - The contract's balance must not increase (i.e., delta ≤ 0) after the transfer.
+    ///
+    /// # Errors
+    /// - `TransferError::TransferAmountNotPositive` if `amount` is ≤ 0.
+    /// - `TransferError::RecipientBalanceDeltaMismatch` if recipient balance delta ≠ `amount`.
+    /// - `TransferError::SenderBalanceDeltaMismatch` if contract balance delta > 0.
+    pub fn transfer_funding_token_with_balance_checks(
+        env: &Env,
+        token: &Address,
+        to: &Address,
+        amount: i128,
+    ) -> Result<(), TransferError> {
+        if amount <= 0 {
+            return Err(TransferError::TransferAmountNotPositive);
+        }
+
+        let token_client = token::Client::new(env, token);
+        let contract_address = env.current_contract_address();
+
+        // Record pre-transfer balances
+        let pre_contract_balance = token_client.balance(&contract_address);
+        let pre_recipient_balance = token_client.balance(to);
+
+        // Perform the transfer
+        token_client.transfer(&contract_address, to, &amount);
+
+        // Record post-transfer balances
+        let post_contract_balance = token_client.balance(&contract_address);
+        let post_recipient_balance = token_client.balance(to);
+
+        // Verify recipient received exactly the expected amount
+        let recipient_delta = post_recipient_balance - pre_recipient_balance;
+        if recipient_delta != amount {
+            return Err(TransferError::RecipientBalanceDeltaMismatch);
+        }
+
+        // Verify contract's balance did not increase
+        let contract_delta = post_contract_balance - pre_contract_balance;
+        if contract_delta > 0 {
+            return Err(TransferError::SenderBalanceDeltaMismatch);
+        }
+
+        Ok(())
+    }
+}
+
 // ── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -33,7 +153,7 @@ pub struct BountyContract;
 
 #[contractimpl]
 impl BountyContract {
-    /// One-time initialiser – sets the fee recipient address.
+    /// One-time initialiser — sets the fee recipient address.
     pub fn initialize(env: Env, fee_recipient: Address) {
         if env.storage().instance().has(&DataKey::FeeRecipient) {
             panic!("already initialized");
@@ -49,21 +169,21 @@ impl BountyContract {
     /// `protocol_fee_bps` is optional (pass 0 for no fee).  The full `amount`
     /// is transferred from the caller into the contract escrow immediately.
     pub fn create_bounty(
-        env:              Env,
-        creator:          Address,
-        hunter:           Address,
-        token:            Address,
-        amount:           i128,
+        env: Env,
+        creator: Address,
+        hunter: Address,
+        token: Address,
+        amount: i128,
         protocol_fee_bps: u32,
     ) -> u64 {
         creator.require_auth();
 
-        assert!(amount > 0,           "amount must be positive");
+        assert!(amount > 0, "amount must be positive");
         assert!(protocol_fee_bps <= 10_000, "fee_bps must be <= 10000");
 
-        // Pull funds into the contract.
-        let client = token::Client::new(&env, &token);
-        client.transfer(&creator, &env.current_contract_address(), &amount);
+        // Pull funds into the contract using the new helper
+        external_calls::transfer_into_escrow_with_balance_checks(&env, &token, &creator, amount)
+            .unwrap_or_else(|e| panic!("transfer failed: {:?}", e));
 
         let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(0);
         let bounty = Bounty {
@@ -105,16 +225,16 @@ impl BountyContract {
             .get(&DataKey::FeeRecipient)
             .expect("not initialized");
 
-        let client = token::Client::new(&env, &bounty.token);
-
-        // fee = amount * bps / 10_000  (integer division, rounds down)
+        // fee = amount * bps / 10_000 (integer division, rounds down)
         let fee: i128 = bounty.amount * (bounty.protocol_fee_bps as i128) / 10_000;
         let payout: i128 = bounty.amount - fee;
 
         if fee > 0 {
-            client.transfer(&env.current_contract_address(), &fee_recipient, &fee);
+            external_calls::transfer_funding_token_with_balance_checks(&env, &bounty.token, &fee_recipient, fee)
+                .unwrap_or_else(|e| panic!("fee transfer failed: {:?}", e));
         }
-        client.transfer(&env.current_contract_address(), &bounty.hunter, &payout);
+        external_calls::transfer_funding_token_with_balance_checks(&env, &bounty.token, &bounty.hunter, payout)
+            .unwrap_or_else(|e| panic!("payout transfer failed: {:?}", e));
 
         bounty.released = true;
         env.storage().persistent().set(&DataKey::Bounty(id), &bounty);
@@ -244,5 +364,93 @@ mod tests {
         let id = client.create_bounty(&creator, &hunter, &token, &500_i128, &0u32);
         client.release_bounty(&id);
         client.release_bounty(&id); // should panic
+    }
+
+    // ── External Calls Tests ────────────────────────────────────────────────
+
+    mod external_calls_tests {
+        use super::*;
+        use soroban_sdk::{
+            testutils::Address as _,
+            token::{Client as TokenClient, StellarAssetClient},
+            Address, Env,
+        };
+
+        #[test]
+        fn test_transfer_into_escrow_happy_path() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let contract_id = env.register_contract(None, BountyContract);
+            let client = BountyContractClient::new(&env, &contract_id);
+            let fee_recipient = Address::generate(&env);
+            client.initialize(&fee_recipient);
+
+            let creator = Address::generate(&env);
+            let token_admin = Address::generate(&env);
+            let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+            let token_addr = token_id.address();
+            let sac = StellarAssetClient::new(&env, &token_addr);
+            sac.mint(&creator, &1000_i128);
+
+            let result = external_calls::transfer_into_escrow_with_balance_checks(
+                &env,
+                &token_addr,
+                &creator,
+                500_i128,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        #[should_panic]
+        fn test_transfer_into_escrow_zero_amount() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let contract_id = env.register_contract(None, BountyContract);
+            let client = BountyContractClient::new(&env, &contract_id);
+            let fee_recipient = Address::generate(&env);
+            client.initialize(&fee_recipient);
+
+            let creator = Address::generate(&env);
+            let token_admin = Address::generate(&env);
+            let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+            let token_addr = token_id.address();
+
+            external_calls::transfer_into_escrow_with_balance_checks(
+                &env,
+                &token_addr,
+                &creator,
+                0_i128,
+            ).unwrap();
+        }
+
+        #[test]
+        fn test_transfer_funding_token_happy_path() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let contract_id = env.register_contract(None, BountyContract);
+            let client = BountyContractClient::new(&env, &contract_id);
+            let fee_recipient = Address::generate(&env);
+            client.initialize(&fee_recipient);
+
+            let recipient = Address::generate(&env);
+            let token_admin = Address::generate(&env);
+            let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+            let token_addr = token_id.address();
+            let sac = StellarAssetClient::new(&env, &token_addr);
+            let contract_addr = env.current_contract_address();
+            sac.mint(&contract_addr, &1000_i128);
+
+            let result = external_calls::transfer_funding_token_with_balance_checks(
+                &env,
+                &token_addr,
+                &recipient,
+                500_i128,
+            );
+            assert!(result.is_ok());
+        }
     }
 }
