@@ -138,7 +138,7 @@ function refreshMetrics() {
         queueLength += Number(stats.queueLength || 0);
         retryQueueLength += Number(stats.retryQueueLength || 0);
       }
-    } catch (err) {
+    } catch {
       // Preserve existing metrics if a registered queue becomes invalid.
     }
   }
@@ -150,7 +150,7 @@ function refreshMetrics() {
       if (stats && typeof stats.processingCount === 'number') {
         workerInFlight += stats.processingCount;
       }
-    } catch (err) {
+    } catch {
       // Preserve existing metrics if a registered worker becomes invalid.
     }
   }
@@ -188,6 +188,12 @@ function refreshMetrics() {
     bodySizeRejectionsByType;
 }
 
+/**
+ * Starts the periodic metrics refresh interval timer.
+ * The timer is created once and automatically unref'd so it does not
+ * keep the Node.js process alive.
+ * @returns {void}
+ */
 function startMetricsRefresh() {
   if (refreshTimer) {
     return;
@@ -199,6 +205,10 @@ function startMetricsRefresh() {
   }
 }
 
+/**
+ * Stops the periodic metrics refresh interval timer.
+ * @returns {void}
+ */
 function stopMetricsRefresh() {
   if (!refreshTimer) {
     return;
@@ -246,6 +256,11 @@ function registerWorker(worker) {
   startMetricsRefresh();
 }
 
+/**
+ * Resets all metrics state for test isolation.
+ * Clears registered queues, workers, and resets gauge values to zero.
+ * @returns {void}
+ */
 function resetMetricsForTests() {
   registeredJobQueues.clear();
   registeredWorkers.clear();

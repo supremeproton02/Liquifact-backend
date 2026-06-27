@@ -41,7 +41,7 @@ const MAX_STRING_LENGTH = 10000;
  * @returns {boolean} True if sensitive
  */
 function isSensitiveKey(key) {
-  if (!key || typeof key !== 'string') return false;
+  if (!key || typeof key !== 'string') { return false; }
   const lowerKey = key.toLowerCase();
   return SENSITIVE_FIELD_NAMES.some(name => lowerKey.includes(name.toLowerCase()));
 }
@@ -52,7 +52,7 @@ function isSensitiveKey(key) {
  * @returns {boolean} True if sensitive pattern found
  */
 function hasSensitivePattern(value) {
-  if (typeof value !== 'string') return false;
+  if (typeof value !== 'string') { return false; }
   
   if (value.length > MAX_STRING_LENGTH) {
     return true;
@@ -175,7 +175,7 @@ function scrubUrl(urlString) {
       return urlString;
     }
     return formatted;
-  } catch (error) {
+  } catch {
     return urlString;
   }
 }
@@ -186,7 +186,7 @@ function scrubUrl(urlString) {
  * @returns {Object} Scrubbed request
  */
 function scrubRequest(request) {
-  if (!request) return request;
+  if (!request) { return request; }
 
   const scrubbed = { ...request };
 
@@ -230,11 +230,11 @@ function scrubRequest(request) {
  * @returns {Array|Object} Scrubbed breadcrumbs
  */
 function scrubBreadcrumbs(breadcrumbs) {
-  if (!breadcrumbs) return breadcrumbs;
-  if (!Array.isArray(breadcrumbs)) return deepScrub(breadcrumbs);
+  if (!breadcrumbs) { return breadcrumbs; }
+  if (!Array.isArray(breadcrumbs)) { return deepScrub(breadcrumbs); }
 
   return breadcrumbs.map(crumb => {
-    if (typeof crumb !== 'object' || crumb === null) return crumb;
+    if (typeof crumb !== 'object' || crumb === null) { return crumb; }
     
     const scrubbed = { ...crumb };
     
