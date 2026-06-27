@@ -222,6 +222,27 @@ sum(rate(body_size_limit_rejections_total[5m])) > 0.167
 
 For production deployments, include the full YAML alert rule from [`docs/prometheus-rules.yml`](./docs/prometheus-rules.yml).
 
+### Grafana dashboard
+
+Import the pre-built Grafana dashboard to visualize body-size limit rejection metrics over time:
+
+  1. Open Grafana → **+** → **Import**.
+  2. Upload or paste [`docs/grafana-dashboard.json`](./docs/grafana-dashboard.json).
+  3. Select your Prometheus data source.
+  4. Click **Import**.
+
+The dashboard includes the following panels:
+
+| Panel | Type | Description |
+|---|---|---|
+| Rejection Rate by Type | Time series | `rate(body_size_limit_rejections_total[5m])` per `type` label (json, urlencoded, invoice, unknown) + aggregate |
+| Current Rejection Rate | Stat | Live rate with green/yellow/red background thresholds matching alert severity |
+| Rejections by Type (Current) | Bar gauge | Instant per-type rates for quick scanning |
+| Cumulative Rejections (Last Hour) | Bar gauge | `increase()[1h]` per type — sustained values > 600 suggest probing |
+| Cumulative Rejections Over Time | Time series | Hourly increase per type over the selected time window |
+| Alert Threshold Reference | Bar gauge | Combined rate with visual threshold markers |
+| Historical Rejection Heatmap | Time series (step) | All-types aggregate with color-coded severity bands |
+
 ---
 
 ## KYC Provider Integration
