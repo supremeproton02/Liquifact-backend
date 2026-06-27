@@ -89,6 +89,13 @@ const registeredJobQueues = new Set();
 const registeredWorkers = new Set();
 let refreshTimer = null;
 
+/** Shared registry — exported so tests can reset it between runs. */
+const registry = new client.Registry();
+
+if (typeof client.collectDefaultMetrics === 'function') {
+  client.collectDefaultMetrics({ register: registry });
+}
+
 const queueDepthGauge = new client.Gauge({
   name: 'liquifact_job_queue_depth',
   help: 'Number of pending jobs currently waiting in background queues',
@@ -343,13 +350,6 @@ function metricsAuth(req, res, next) {
 async function metricsHandler(_req, res) {
   res.set('Content-Type', registry.contentType);
   res.end(await registry.metrics());
-}
-
-/** Shared registry — exported so tests can reset it between runs. */
-const registry = new client.Registry();
-
-if (typeof client.collectDefaultMetrics === 'function') {
-  client.collectDefaultMetrics({ register: registry });
 }
 
 /**

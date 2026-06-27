@@ -14,10 +14,6 @@
 
 const rateLimit = require('express-rate-limit');
 
-const rateLimit = require('express-rate-limit');
-const { RedisStore } = require('rate-limit-redis');
-const { getRedisClient } = require('../cache/redis');
-
 // Emulating original parsing utility configuration hooks
 const WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000;
 const MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS, 10) || 100;
@@ -31,14 +27,20 @@ const MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS, 10) || 100;
  * @returns {Function} Express middleware handler
  */
 function createRateLimiter(scope, windowMs = WINDOW_MS, max = MAX_REQUESTS) {
+  const { getRedisClient } = require('../cache/redis');
   const { client, isAvailable } = getRedisClient();
   let store;
 
   if (isAvailable && client) {
-    store = new RedisStore({
-      sendCommand: (...args) => client.sendCommand(args),
-      prefix: `rate-limit:${scope}:`,
-    });
+    try {
+      const { RedisStore } = require('rate-limit-redis');
+      store = new RedisStore({
+        sendCommand: (...args) => client.sendCommand(args),
+        prefix: `rate-limit:${scope}:`,
+      });
+    } catch (_err) {
+      console.warn(`[RateLimit] rate-limit-redis unavailable for scope [${scope}]. Falling back to MemoryStore.`);
+    }
   } else {
     console.warn(`[RateLimit] Redis store unavailable for scope [${scope}]. Falling back safely to MemoryStore.`);
   }
@@ -69,15 +71,6 @@ function createRateLimiter(scope, windowMs = WINDOW_MS, max = MAX_REQUESTS) {
     }
   });
 }
-
-const globalLimiter = createRateLimiter('global', WINDOW_MS, MAX_REQUESTS);
-const sensitiveLimiter = createRateLimiter('sensitive', 5 * 60 * 1000, 20);
-
-module.exports = {
-  createRateLimiter,
-  globalLimiter,
-  sensitiveLimiter,
-};
 
 /**
  * Parse environment variable as positive integer.
@@ -205,6 +198,7 @@ const apiKeyLimiter = rateLimit({
 });
 
 module.exports = {
+  createRateLimiter,
   globalLimiter,
   sensitiveLimiter,
   apiKeyLimiter,
